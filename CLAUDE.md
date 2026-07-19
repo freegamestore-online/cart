@@ -1,10 +1,10 @@
-# APPNAME
+# Cart
 
 ## Platform: FreeGameStore
 - Hosted on Cloudflare R2 (static SPA, served by host Worker)
 - ONE environment only (production). No dev/staging. Fix forward, no rollbacks.
 - Push to `main` auto-deploys to production via R2
-- Domain: APPNAME.freegamestore.online
+- Domain: Cart.freegamestore.online
 
 ## Tech Stack
 - TypeScript, React 19, Vite 8, Tailwind CSS 4.1, pnpm

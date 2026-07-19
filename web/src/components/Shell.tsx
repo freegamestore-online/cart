@@ -19,7 +19,7 @@ export function Shell({ children, sidebar, dock }: ShellProps) {
           }}
         >
           <div className="p-6 font-bold text-lg" style={{ fontFamily: "Fraunces, serif" }}>
-            APPNAME
+            Cart
           </div>
           {sidebar ?? (
             <nav className="flex-1 px-4">
@@ -46,7 +46,7 @@ export function Shell({ children, sidebar, dock }: ShellProps) {
           style={{ borderColor: "var(--line)", background: "var(--panel)" }}
         >
           <span className="font-bold" style={{ fontFamily: "Fraunces, serif" }}>
-            APPNAME
+            Cart
           </span>
           {dock && <div className="flex items-center gap-3">{dock}</div>}
         </header>
