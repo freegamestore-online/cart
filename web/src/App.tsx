@@ -1,289 +1,510 @@
-import React, { useRef, useEffect, useState } from "react";
-import { Color3, Engine, Scene, ArcRotateCamera, HemisphericLight, MeshBuilder, StandardMaterial, Vector3, ActionManager, ExecuteCodeAction, Scene as BabylonScene, Mesh, Animation, Sound } from "@babylonjs/core";
-import { GameShell, GameTopbar } from "@freegamestore/games";
+import React, { useRef, useEffect, useState, useCallback } from "react";
+import {
+  Color3,
+  Color4,
+  Engine,
+  Scene,
+  ArcRotateCamera,
+  HemisphericLight,
+  DirectionalLight,
+  MeshBuilder,
+  StandardMaterial,
+  Vector3,
+  Mesh,
+} from "@babylonjs/core";
 import { useHighScore } from "./hooks/useHighScore";
 
-const TRACK_LENGTH = 60;
-const COIN_COUNT = 25;
-const OBSTACLE_COUNT = 10;
-const CART_SPEED = 0.22;
-const CART_RADIUS = 0.7;
-const TRACK_RADIUS = 4;
-const COIN_RADIUS = 0.32;
-const OBSTACLE_RADIUS = 0.6;
+// ─── Constants ────────────────────────────────────────────────────────────────
+const LANE_X = [-2.8, 0, 2.8] as const;
+const SEGMENT_LEN = 12;
+const NUM_SEGMENTS = 18;
+const INITIAL_SPEED = 0.18;
+const CART_Y = 0.55;
+const LANE_LERP = 0.14;
+const TRACK_W = 7.2;
 
-function randomOnTrack(t: number) {
-  // Returns Vector3 for a point along the track (a gentle S curve)
-  const angle = t * Math.PI * 2;
-  const x = Math.sin(angle * 0.4) * TRACK_RADIUS;
-  const z = t * TRACK_LENGTH - TRACK_LENGTH / 2;
-  const y = Math.cos(angle * 0.25) * 1.2;
-  return new Vector3(x, y, z);
+type GameState = "playing" | "paused" | "gameover";
+
+interface Segment {
+  floor: Mesh;
+  lw: Mesh;
+  rw: Mesh;
+  zStart: number;
 }
 
+interface Coin {
+  mesh: Mesh;
+  z: number;
+  collected: boolean;
+}
+
+interface Obstacle {
+  mesh: Mesh;
+  z: number;
+  hit: boolean;
+}
+
+// ─── Pure scene helpers (no closure over React state) ─────────────────────────
+
+function makeMat(scene: Scene, r: number, g: number, b: number): StandardMaterial {
+  const m = new StandardMaterial("m_" + Math.random(), scene);
+  m.diffuseColor = new Color3(r, g, b);
+  return m;
+}
+
+function buildSegment(scene: Scene, zStart: number, idx: number): Segment {
+  const wallH = 1.4;
+  const floor = MeshBuilder.CreateBox("fl", { width: TRACK_W, height: 0.3, depth: SEGMENT_LEN }, scene);
+  floor.position.set(0, 0, zStart + SEGMENT_LEN / 2);
+  floor.material = makeMat(scene, idx % 2 === 0 ? 0.55 : 0.45, idx % 2 === 0 ? 0.9 : 0.82, idx % 2 === 0 ? 0.55 : 0.45);
+
+  const wallMat = makeMat(scene, 0.95, 0.6, 0.2);
+  const lw = MeshBuilder.CreateBox("lw", { width: 0.35, height: wallH, depth: SEGMENT_LEN }, scene);
+  lw.position.set(-TRACK_W / 2 - 0.175, wallH / 2, zStart + SEGMENT_LEN / 2);
+  lw.material = wallMat;
+
+  const rw = MeshBuilder.CreateBox("rw", { width: 0.35, height: wallH, depth: SEGMENT_LEN }, scene);
+  rw.position.set(TRACK_W / 2 + 0.175, wallH / 2, zStart + SEGMENT_LEN / 2);
+  rw.material = wallMat;
+
+  return { floor, lw, rw, zStart };
+}
+
+function spawnCoin(scene: Scene, laneIdx: number, z: number): Coin {
+  const mesh = MeshBuilder.CreateCylinder("coin", { diameter: 0.58, height: 0.12, tessellation: 20 }, scene);
+  mesh.position.set(LANE_X[laneIdx] ?? 0, CART_Y + 0.35, z);
+  mesh.rotation.x = Math.PI / 2;
+  const m = makeMat(scene, 1, 0.85, 0.1);
+  m.emissiveColor = new Color3(0.4, 0.3, 0);
+  mesh.material = m;
+  return { mesh, z, collected: false };
+}
+
+function spawnObstacle(scene: Scene, laneIdx: number, z: number): Obstacle {
+  const mesh = MeshBuilder.CreateBox("obs", { width: 1.15, height: 1.15, depth: 1.15 }, scene);
+  mesh.position.set(LANE_X[laneIdx] ?? 0, CART_Y + 0.05, z);
+  mesh.material = makeMat(scene, 0.9, 0.2, 0.2);
+  return { mesh, z, hit: false };
+}
+
+function populateSegment(
+  scene: Scene,
+  zStart: number,
+  segIdx: number,
+  coins: Coin[],
+  obstacles: Obstacle[]
+) {
+  if (segIdx < 3) {
+    // Safe intro — just a coin
+    const lane = Math.floor(Math.random() * 3);
+    coins.push(spawnCoin(scene, lane, zStart + 3 + Math.random() * (SEGMENT_LEN - 5)));
+    return;
+  }
+
+  const r = Math.random();
+  if (r < 0.5) {
+    // Row of coins
+    const count = 1 + Math.floor(Math.random() * 3);
+    const lane = Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      coins.push(spawnCoin(scene, lane, zStart + 2 + i * 1.5 + Math.random() * 0.4));
+    }
+  } else if (r < 0.85) {
+    // Obstacle + coin on safe lane
+    const obsLane = Math.floor(Math.random() * 3);
+    const obsZ = zStart + 4 + Math.random() * (SEGMENT_LEN - 6);
+    obstacles.push(spawnObstacle(scene, obsLane, obsZ));
+    const coinLane = (obsLane + 1 + Math.floor(Math.random() * 2)) % 3;
+    coins.push(spawnCoin(scene, coinLane, zStart + 2 + Math.random() * 2));
+  } else {
+    // Two obstacles, one safe lane
+    const a = Math.floor(Math.random() * 3);
+    const b = (a + 1) % 3;
+    const z1 = zStart + 3 + Math.random() * (SEGMENT_LEN - 5);
+    const z2 = zStart + 3 + Math.random() * (SEGMENT_LEN - 5);
+    obstacles.push(spawnObstacle(scene, a, z1));
+    obstacles.push(spawnObstacle(scene, b, z2));
+  }
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [gameState, setGameState] = useState<GameState>("playing");
   const [score, setScore] = useState(0);
-  const [highScore, setHighScore] = useHighScore("cart_highscore");
-  const [isPaused, setIsPaused] = useState(false);
-  const [isGameOver, setIsGameOver] = useState(false);
-  const [audioEnabled, setAudioEnabled] = useState(false);
-  const [uiState, setUiState] = useState<'playing'|'gameover'|'paused'>('playing');
+  const [highScore, updateHighScore] = useHighScore("cart_highscore");
 
-  // Game objects
-  const cartRef = useRef<Mesh | null>(null);
-  const coinsRef = useRef<{ mesh: Mesh; collected: boolean }[]>([]);
-  const obstaclesRef = useRef<Mesh[]>([]);
-  const [engine, setEngine] = useState<Engine | null>(null);
-  const [scene, setScene] = useState<BabylonScene | null>(null);
+  // Mutable game refs — updated every frame without re-renders
+  const stateRef = useRef<GameState>("playing");
+  const scoreRef = useRef(0);
+  const speedRef = useRef(INITIAL_SPEED);
+  const cartZRef = useRef(0);
+  const cartLaneRef = useRef(1);
+  const cartXRef = useRef<number>(LANE_X[1]);
+  const cartTargetXRef = useRef<number>(LANE_X[1]);
+  const cartMeshRef = useRef<Mesh | null>(null);
+  const segmentsRef = useRef<Segment[]>([]);
+  const coinsRef = useRef<Coin[]>([]);
+  const obstaclesRef = useRef<Obstacle[]>([]);
+  const nextSegZRef = useRef(0);
+  const segCountRef = useRef(0);
+  const frameRef = useRef(0);
+  const engineRef = useRef<Engine | null>(null);
+  const sceneRef = useRef<Scene | null>(null);
 
-  // Cart state
-  const cartT = useRef(0.05); // Progress along track
-  const laneOffset = useRef(0); // -1, 0, 1: left/center/right
+  const syncState = useCallback((s: GameState) => {
+    stateRef.current = s;
+    setGameState(s);
+  }, []);
 
-  // SFX
-  const coinSoundRef = useRef<Sound | null>(null);
-  const crashSoundRef = useRef<Sound | null>(null);
+  const syncScore = useCallback(
+    (s: number) => {
+      scoreRef.current = s;
+      setScore(s);
+      updateHighScore(s);
+    },
+    [updateHighScore]
+  );
 
-  // Input
-  useEffect(() => {
-    if (!scene) return;
-    const onKeyboard = (evt: any) => {
-      if (uiState !== 'playing') return;
-      if (evt.type === "keydown") {
-        if (evt.event.key === "ArrowLeft") laneOffset.current = Math.max(-1, laneOffset.current - 1);
-        if (evt.event.key === "ArrowRight") laneOffset.current = Math.min(1, laneOffset.current + 1);
-        if (evt.event.key === " " && !isGameOver) setIsPaused(p => !p);
-      }
-    };
-    scene.onKeyboardObservable.add(onKeyboard);
-    return () => { scene.onKeyboardObservable.remove(onKeyboard); };
-  }, [scene, uiState, isGameOver]);
-
-  // Touch input
-  useEffect(() => {
-    function handleTouch(e: TouchEvent) {
-      if (uiState !== 'playing') return;
-      if (!canvasRef.current) return;
-      const x = e.touches[0]?.clientX;
-      const w = canvasRef.current.offsetWidth;
-      if (!x || !w) return;
-      laneOffset.current = x < w / 2 ? Math.max(-1, laneOffset.current - 1) : Math.min(1, laneOffset.current + 1);
-    }
-    window.addEventListener('touchstart', handleTouch);
-    return () => window.removeEventListener('touchstart', handleTouch);
-  }, [uiState]);
-
-  // Main Babylon setup
+  // ── Babylon setup (runs once) ──────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const engine = new Engine(canvas, true);
-    setEngine(engine);
+
+    const engine = new Engine(canvas, true, { preserveDrawingBuffer: false });
+    engineRef.current = engine;
     const scene = new Scene(engine);
-    setScene(scene);
+    sceneRef.current = scene;
+    scene.clearColor = new Color4(0.53, 0.81, 0.98, 1);
 
     // Camera
-    const camera = new ArcRotateCamera("camera", Math.PI/2, Math.PI/3, 16, new Vector3(0, 2, 0), scene);
-    camera.attachControl(canvas, true);
-    camera.lowerRadiusLimit = 8;
-    camera.upperRadiusLimit = 24;
-    camera.wheelPrecision = 100;
-    camera.setTarget(new Vector3(0, 2, 0));
+    const camera = new ArcRotateCamera("cam", -Math.PI / 2, Math.PI / 3.5, 14, new Vector3(0, 2, 0), scene);
+    camera.lowerRadiusLimit = 14;
+    camera.upperRadiusLimit = 14;
 
-    // Light
-    const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-    light.intensity = 1.1;
+    // Lights
+    const hemi = new HemisphericLight("hemi", new Vector3(0, 1, 0), scene);
+    hemi.intensity = 0.75;
+    const dir = new DirectionalLight("dir", new Vector3(-1, -2, -1), scene);
+    dir.intensity = 0.6;
 
-    // Track
-    const trackPoints = Array.from({length: TRACK_LENGTH}, (_, i) => {
-      return randomOnTrack(i/TRACK_LENGTH);
-    });
-    const track = MeshBuilder.CreateTube("track", {
-      path: trackPoints,
-      radius: 1.1,
-      tessellation: 32,
-    }, scene);
-    const trackMat = new StandardMaterial("trackMat", scene);
-    trackMat.diffuseColor = new Color3(0.88, 0.96, 1);
-    track.material = trackMat;
+    // Cart body
+    const cartBody = MeshBuilder.CreateBox("cart", { width: 1.1, height: 0.7, depth: 1.5 }, scene);
+    cartBody.position.set(LANE_X[1], CART_Y, 0);
+    cartBody.material = makeMat(scene, 0.18, 0.52, 0.96);
+    cartMeshRef.current = cartBody;
 
-    // Cart
-    const cart = MeshBuilder.CreateSphere("cart", {diameter: CART_RADIUS*2}, scene);
-    cart.position.copyFrom(randomOnTrack(cartT.current));
-    cart.position.x += laneOffset.current * 2.2;
-    const cartMat = new StandardMaterial("cartMat", scene);
-    cartMat.diffuseColor = new Color3(0.16, 0.56, 0.91);
-    cart.material = cartMat;
-    cartRef.current = cart;
-
-    // Coins
-    coinsRef.current = Array.from({length: COIN_COUNT}, (_, i) => {
-      const t = 0.12 + (i * 0.7 / COIN_COUNT);
-      const pos = randomOnTrack(t);
-      pos.x += [-2.2, 0, 2.2][Math.floor(Math.random()*3)];
-      const coin = MeshBuilder.CreateCylinder("coin", {diameter: COIN_RADIUS*2, height: 0.18}, scene);
-      coin.position.copyFrom(pos);
-      const coinMat = new StandardMaterial("coinMat", scene);
-      coinMat.diffuseColor = new Color3(1, 0.87, 0.22);
-      coin.material = coinMat;
-      coin.rotation.z = Math.PI/2;
-      coin.actionManager = new ActionManager(scene);
-      return { mesh: coin, collected: false };
+    // Wheels
+    const wheelMat = makeMat(scene, 0.15, 0.15, 0.15);
+    const wOff: [number, number, number][] = [[-0.5, -0.32, -0.6], [0.5, -0.32, -0.6], [-0.5, -0.32, 0.6], [0.5, -0.32, 0.6]];
+    wOff.forEach(([wx, wy, wz]) => {
+      const w = MeshBuilder.CreateCylinder("wh", { diameter: 0.38, height: 0.22, tessellation: 16 }, scene);
+      w.rotation.z = Math.PI / 2;
+      w.position.set(wx, wy, wz);
+      w.material = wheelMat;
+      w.parent = cartBody;
     });
 
-    // Obstacles
-    obstaclesRef.current = Array.from({length: OBSTACLE_COUNT}, (_, i) => {
-      const t = 0.18 + (i * 0.7 / OBSTACLE_COUNT);
-      const pos = randomOnTrack(t);
-      pos.x += [-2.2, 0, 2.2][Math.floor(Math.random()*3)];
-      const obs = MeshBuilder.CreateBox("obstacle", {size: OBSTACLE_RADIUS*2}, scene);
-      obs.position.copyFrom(pos);
-      const obsMat = new StandardMaterial("obsMat", scene);
-      obsMat.diffuseColor = new Color3(0.98, 0.36, 0.32);
-      obs.material = obsMat;
-      obs.actionManager = new ActionManager(scene);
-      return obs;
-    });
+    // Handle
+    const handle = MeshBuilder.CreateBox("hdl", { width: 1.1, height: 0.1, depth: 0.12 }, scene);
+    handle.position.set(0, 0.42, -0.68);
+    handle.material = makeMat(scene, 0.7, 0.7, 0.75);
+    handle.parent = cartBody;
 
-    // SFX
-    coinSoundRef.current = new Sound("coin", "https://cdn.jsdelivr.net/gh/FreeGameStore/audio/coin.wav", scene, undefined, { volume: 0.7, autoplay: false });
-    crashSoundRef.current = new Sound("crash", "https://cdn.jsdelivr.net/gh/FreeGameStore/audio/crash.wav", scene, undefined, { volume: 0.7, autoplay: false });
+    // Initial track
+    segmentsRef.current = [];
+    coinsRef.current = [];
+    obstaclesRef.current = [];
+    nextSegZRef.current = 0;
+    segCountRef.current = 0;
 
-    // Animate
+    for (let i = 0; i < NUM_SEGMENTS; i++) {
+      const z = i * SEGMENT_LEN;
+      segmentsRef.current.push(buildSegment(scene, z, i));
+      populateSegment(scene, z, i, coinsRef.current, obstaclesRef.current);
+      nextSegZRef.current = z + SEGMENT_LEN;
+      segCountRef.current = i + 1;
+    }
+
+    // Render loop
     scene.onBeforeRenderObservable.add(() => {
-      if (isPaused || isGameOver || uiState !== 'playing') return;
-      cartT.current += CART_SPEED * engine.getDeltaTime() / 1200;
-      if (cartT.current > 0.99) {
-        setIsGameOver(true);
-        setUiState('gameover');
-        setHighScore(score);
-        return;
+      if (stateRef.current !== "playing") return;
+
+      const dt = engine.getDeltaTime() / 1000;
+      speedRef.current = Math.min(speedRef.current + 0.00004, 0.55);
+      cartZRef.current += speedRef.current * 60 * dt;
+
+      // Smooth lane lerp
+      const tX = cartTargetXRef.current;
+      cartXRef.current += (tX - cartXRef.current) * LANE_LERP;
+
+      const cart = cartMeshRef.current;
+      if (cart) {
+        cart.position.z = cartZRef.current;
+        cart.position.x = cartXRef.current;
+        cart.rotation.z = -(tX - cartXRef.current) * 0.08;
       }
-      // Cart position
-      const basePos = randomOnTrack(cartT.current);
-      cart.position.copyFrom(basePos);
-      cart.position.x += laneOffset.current * 2.2;
-      // Coin rotation
-      coinsRef.current.forEach(({mesh, collected}) => {
-        if (!collected) mesh.rotation.y += 0.05;
+
+      // Camera follows cart
+      camera.target.set(cartXRef.current * 0.3, 2, cartZRef.current - 2);
+
+      const cartZ = cartZRef.current;
+
+      // Recycle segments
+      for (const seg of segmentsRef.current) {
+        if (seg.zStart + SEGMENT_LEN < cartZ - SEGMENT_LEN) {
+          const newZ = nextSegZRef.current;
+          const off = newZ - seg.zStart;
+          seg.floor.position.z += off;
+          seg.lw.position.z += off;
+          seg.rw.position.z += off;
+          seg.zStart = newZ;
+          populateSegment(scene, newZ, segCountRef.current, coinsRef.current, obstaclesRef.current);
+          segCountRef.current++;
+          nextSegZRef.current += SEGMENT_LEN;
+        }
+      }
+
+      // Cull old coins/obstacles
+      coinsRef.current = coinsRef.current.filter((c) => {
+        if (c.z < cartZ - SEGMENT_LEN * 2) { c.mesh.dispose(); return false; }
+        return true;
       });
-      // Collision: coins
-      coinsRef.current.forEach(c => {
-        if (c.collected) return;
-        if (cart.position.subtract(c.mesh.position).length() < CART_RADIUS + COIN_RADIUS) {
+      obstaclesRef.current = obstaclesRef.current.filter((o) => {
+        if (o.z < cartZ - SEGMENT_LEN * 2) { o.mesh.dispose(); return false; }
+        return true;
+      });
+
+      // Spin coins
+      frameRef.current++;
+      for (const c of coinsRef.current) {
+        if (!c.collected) c.mesh.rotation.y += 0.06;
+      }
+
+      // Coin collision
+      const cx = cartXRef.current;
+      for (const c of coinsRef.current) {
+        if (c.collected) continue;
+        if (Math.abs(c.z - cartZ) < 1.1 && Math.abs(c.mesh.position.x - cx) < 1.1) {
           c.collected = true;
           c.mesh.isVisible = false;
-          setScore(s => s+1);
-          if (audioEnabled && coinSoundRef.current) coinSoundRef.current.play();
+          syncScore(scoreRef.current + 10);
         }
-      });
-      // Collision: obstacles
-      obstaclesRef.current.forEach(obs => {
-        if (cart.position.subtract(obs.position).length() < CART_RADIUS + OBSTACLE_RADIUS) {
-          setIsGameOver(true);
-          setUiState('gameover');
-          setHighScore(score);
-          if (audioEnabled && crashSoundRef.current) crashSoundRef.current.play();
+      }
+
+      // Obstacle collision
+      for (const o of obstaclesRef.current) {
+        if (o.hit) continue;
+        if (Math.abs(o.z - cartZ) < 1.0 && Math.abs(o.mesh.position.x - cx) < 1.0) {
+          o.hit = true;
+          syncState("gameover");
         }
-      });
-      // Move camera
-      camera.setTarget(cart.position);
-      camera.alpha = Math.PI/2 + Math.sin(cartT.current*2)*0.15;
-      camera.beta = Math.PI/2.7;
-      camera.radius = 14;
+      }
+
+      // Distance score tick
+      if (frameRef.current % 90 === 0) {
+        syncScore(scoreRef.current + 1);
+      }
     });
 
-    engine.runRenderLoop(() => {
-      scene.render();
-    });
-    const resize = () => engine.resize();
-    window.addEventListener("resize", resize);
+    engine.runRenderLoop(() => scene.render());
+
+    const onResize = () => engine.resize();
+    window.addEventListener("resize", onResize);
+
     return () => {
+      window.removeEventListener("resize", onResize);
       engine.dispose();
-      window.removeEventListener("resize", resize);
-      setEngine(null);
-      setScene(null);
     };
-  }, [audioEnabled]);
-
-  // UI controls
-  function handleRestart() {
-    setScore(0);
-    setIsGameOver(false);
-    setUiState('playing');
-    cartT.current = 0.05;
-    laneOffset.current = 0;
-    // Rebuild scene
-    setAudioEnabled(audioEnabled); // triggers Babylon re-init
-  }
-
-  function handlePause() {
-    if (isGameOver) return;
-    setIsPaused(p => !p);
-    setUiState(uiState === 'paused' ? 'playing' : 'paused');
-  }
-
-  function handleAudio() {
-    setAudioEnabled(a => !a);
-  }
-
-  // Responsive canvas sizing
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    function resizeCanvas() {
-      const w = window.innerWidth;
-      const h = window.innerHeight;
-      canvasRef.current!.width = w;
-      canvasRef.current!.height = h - 64;
-    }
-    resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // UI overlay
+  // ── Keyboard input ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const s = stateRef.current;
+      if (e.key === "ArrowLeft" || e.key === "a" || e.key === "A") {
+        if (s !== "playing") return;
+        const next = Math.max(0, cartLaneRef.current - 1);
+        cartLaneRef.current = next;
+        cartTargetXRef.current = LANE_X[next] ?? 0;
+      } else if (e.key === "ArrowRight" || e.key === "d" || e.key === "D") {
+        if (s !== "playing") return;
+        const next = Math.min(2, cartLaneRef.current + 1);
+        cartLaneRef.current = next;
+        cartTargetXRef.current = LANE_X[next] ?? 0;
+      } else if (e.key === " " || e.key === "Escape") {
+        if (s === "playing") syncState("paused");
+        else if (s === "paused") syncState("playing");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [syncState]);
+
+  // ── Restart ────────────────────────────────────────────────────────────────
+  const restart = useCallback(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+
+    coinsRef.current.forEach((c) => c.mesh.dispose());
+    obstaclesRef.current.forEach((o) => o.mesh.dispose());
+    coinsRef.current = [];
+    obstaclesRef.current = [];
+
+    segmentsRef.current.forEach((s) => { s.floor.dispose(); s.lw.dispose(); s.rw.dispose(); });
+    segmentsRef.current = [];
+
+    cartZRef.current = 0;
+    cartLaneRef.current = 1;
+    cartXRef.current = LANE_X[1];
+    cartTargetXRef.current = LANE_X[1];
+    speedRef.current = INITIAL_SPEED;
+    frameRef.current = 0;
+    nextSegZRef.current = 0;
+    segCountRef.current = 0;
+    scoreRef.current = 0;
+    setScore(0);
+
+    for (let i = 0; i < NUM_SEGMENTS; i++) {
+      const z = i * SEGMENT_LEN;
+      segmentsRef.current.push(buildSegment(scene, z, i));
+      populateSegment(scene, z, i, coinsRef.current, obstaclesRef.current);
+      nextSegZRef.current = z + SEGMENT_LEN;
+      segCountRef.current = i + 1;
+    }
+
+    const cart = cartMeshRef.current;
+    if (cart) {
+      cart.position.set(LANE_X[1], CART_Y, 0);
+      cart.rotation.z = 0;
+    }
+
+    syncState("playing");
+  }, [syncState]);
+
+  // ── Touch swipe ────────────────────────────────────────────────────────────
+  const touchStartX = useRef(0);
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0]?.clientX ?? 0;
+  }, []);
+  const onTouchEnd = useCallback((e: React.TouchEvent) => {
+    if (stateRef.current !== "playing") return;
+    const dx = (e.changedTouches[0]?.clientX ?? 0) - touchStartX.current;
+    if (Math.abs(dx) < 20) return;
+    if (dx < 0) {
+      const next = Math.max(0, cartLaneRef.current - 1);
+      cartLaneRef.current = next;
+      cartTargetXRef.current = LANE_X[next] ?? 0;
+    } else {
+      const next = Math.min(2, cartLaneRef.current + 1);
+      cartLaneRef.current = next;
+      cartTargetXRef.current = LANE_X[next] ?? 0;
+    }
+  }, []);
+
+  // ── Lane button handler ────────────────────────────────────────────────────
+  const moveLeft = useCallback(() => {
+    if (stateRef.current !== "playing") return;
+    const next = Math.max(0, cartLaneRef.current - 1);
+    cartLaneRef.current = next;
+    cartTargetXRef.current = LANE_X[next] ?? 0;
+  }, []);
+  const moveRight = useCallback(() => {
+    if (stateRef.current !== "playing") return;
+    const next = Math.min(2, cartLaneRef.current + 1);
+    cartLaneRef.current = next;
+    cartTargetXRef.current = LANE_X[next] ?? 0;
+  }, []);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <GameShell>
-      <GameTopbar title="Cart" />
-      <div className="relative w-full h-[calc(100vh-64px)] bg-gradient-to-b from-blue-50 via-blue-100 to-blue-200 dark:from-blue-900 dark:via-blue-800 dark:to-blue-700">
-        <canvas ref={canvasRef} className="block w-full h-full" style={{touchAction: 'none'}} />
-        <div className="absolute top-4 left-0 right-0 flex justify-center pointer-events-none">
-          <div className="bg-white/70 dark:bg-blue-900/80 rounded-xl px-5 py-2 flex gap-6 text-xl font-fraunces shadow-lg pointer-events-auto">
-            <span>Score: {score}</span>
-            <span>High: {highScore}</span>
-          </div>
+    <div className="relative w-full h-full" style={{ background: "#87cefd" }}>
+      {/* HUD */}
+      <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 pt-3 pb-2 pointer-events-none">
+        <div className="flex flex-col">
+          <span className="text-[10px] font-semibold text-white/70 uppercase tracking-widest">Score</span>
+          <span className="text-2xl font-extrabold text-white drop-shadow-md leading-none">{score}</span>
         </div>
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-4 pointer-events-auto">
-          <button onClick={handlePause} className="bg-blue-500 hover:bg-blue-600 text-white rounded-full px-6 py-3 font-manrope text-lg shadow-md min-w-[44px]">
-            {uiState==='paused' ? 'Resume' : 'Pause'}
-          </button>
-          <button onClick={handleRestart} className="bg-yellow-400 hover:bg-yellow-500 text-blue-900 rounded-full px-6 py-3 font-manrope text-lg shadow-md min-w-[44px]">
-            Restart
-          </button>
-          <button onClick={handleAudio} className="bg-white/90 dark:bg-blue-900 text-blue-600 dark:text-yellow-300 rounded-full px-6 py-3 font-manrope text-lg shadow-md min-w-[44px]">
-            {audioEnabled ? '🔊' : '🔇'}
-          </button>
+        <div className="px-4 py-1 rounded-full font-bold text-white/90 text-lg shadow"
+          style={{ background: "rgba(0,0,0,0.22)", fontFamily: "Fraunces, serif" }}>
+          🛒 Cart
         </div>
-        {uiState==='gameover' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-100/80 dark:bg-blue-900/80">
-            <div className="rounded-xl bg-white/90 dark:bg-blue-900/90 p-7 shadow-2xl">
-              <h1 className="font-fraunces text-4xl text-blue-600 dark:text-yellow-300 mb-4">Game Over!</h1>
-              <p className="font-manrope text-xl mb-2">Final Score: {score}</p>
-              <p className="font-manrope text-lg mb-4">High Score: {highScore}</p>
-              <button onClick={handleRestart} className="bg-blue-500 hover:bg-blue-600 text-white rounded-full px-6 py-3 font-manrope text-xl shadow-md min-w-[44px]">Play Again</button>
-            </div>
-          </div>
-        )}
-        {uiState==='paused' && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-blue-100/80 dark:bg-blue-900/80">
-            <div className="rounded-xl bg-white/90 dark:bg-blue-900/90 p-7 shadow-2xl">
-              <h1 className="font-fraunces text-3xl text-blue-600 dark:text-yellow-300 mb-4">Paused</h1>
-              <button onClick={handlePause} className="bg-blue-500 hover:bg-blue-600 text-white rounded-full px-6 py-3 font-manrope text-xl shadow-md min-w-[44px]">Resume</button>
-            </div>
-          </div>
-        )}
+        <div className="flex flex-col items-end">
+          <span className="text-[10px] font-semibold text-white/70 uppercase tracking-widest">Best</span>
+          <span className="text-2xl font-extrabold text-white drop-shadow-md leading-none">{highScore}</span>
+        </div>
       </div>
-    </GameShell>
+
+      {/* Canvas */}
+      <canvas
+        ref={canvasRef}
+        className="w-full h-full block"
+        onTouchStart={onTouchStart}
+        onTouchEnd={onTouchEnd}
+        style={{ touchAction: "none" }}
+      />
+
+      {/* Mobile lane buttons */}
+      <div className="absolute bottom-6 left-0 right-0 z-10 flex justify-between px-6 md:hidden">
+        <button
+          onPointerDown={moveLeft}
+          className="w-16 h-16 rounded-full text-3xl font-bold text-white shadow-xl active:scale-95 transition-transform select-none"
+          style={{ background: "rgba(20,60,200,0.72)", minWidth: 56, minHeight: 56 }}
+          aria-label="Move left"
+        >←</button>
+        <button
+          onPointerDown={moveRight}
+          className="w-16 h-16 rounded-full text-3xl font-bold text-white shadow-xl active:scale-95 transition-transform select-none"
+          style={{ background: "rgba(20,60,200,0.72)", minWidth: 56, minHeight: 56 }}
+          aria-label="Move right"
+        >→</button>
+      </div>
+
+      {/* Desktop hint */}
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-white/60 text-xs font-medium hidden md:block pointer-events-none select-none">
+        ← → or A / D to change lanes · Space to pause
+      </div>
+
+      {/* Paused overlay */}
+      {gameState === "paused" && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.45)" }}>
+          <div className="bg-white rounded-3xl px-10 py-8 flex flex-col items-center gap-5 shadow-2xl">
+            <span className="text-4xl font-extrabold" style={{ fontFamily: "Fraunces, serif" }}>⏸ Paused</span>
+            <button
+              onClick={() => syncState("playing")}
+              className="px-10 py-3 rounded-full text-white font-bold text-xl shadow-lg active:scale-95 transition-transform"
+              style={{ background: "#1e50c8", minHeight: 48 }}
+            >Resume</button>
+          </div>
+        </div>
+      )}
+
+      {/* Game Over overlay */}
+      {gameState === "gameover" && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div className="bg-white rounded-3xl px-10 py-8 flex flex-col items-center gap-5 shadow-2xl" style={{ minWidth: 280 }}>
+            <span className="text-4xl font-extrabold" style={{ fontFamily: "Fraunces, serif", color: "#e02020" }}>
+              💥 Crashed!
+            </span>
+            <div className="flex gap-10 text-center">
+              <div>
+                <div className="text-xs text-gray-400 uppercase tracking-widest font-semibold">Score</div>
+                <div className="text-4xl font-extrabold text-gray-800">{score}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 uppercase tracking-widest font-semibold">Best</div>
+                <div className="text-4xl font-extrabold text-yellow-500">{highScore}</div>
+              </div>
+            </div>
+            <button
+              onClick={restart}
+              className="px-10 py-3 rounded-full text-white font-bold text-xl shadow-lg active:scale-95 transition-transform"
+              style={{ background: "#1e50c8", minHeight: 48 }}
+            >🛒 Play Again</button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
