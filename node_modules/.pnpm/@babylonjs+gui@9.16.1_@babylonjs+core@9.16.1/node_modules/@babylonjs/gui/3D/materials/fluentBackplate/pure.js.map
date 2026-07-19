@@ -1,0 +1,1 @@
+{"version":3,"file":"pure.js","sourceRoot":"","sources":["../../../../../../dev/gui/src/3D/materials/fluentBackplate/pure.ts"],"names":[],"mappings":"AAAA,6DAA6D;AAC7D,cAAc,gCAAgC,CAAC","sourcesContent":["/** Pure barrel — re-exports only side-effect-free modules */\nexport * from \"./fluentBackplateMaterial.pure\";\n"]}

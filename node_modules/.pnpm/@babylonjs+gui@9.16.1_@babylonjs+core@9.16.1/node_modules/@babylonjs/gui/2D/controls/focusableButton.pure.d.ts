@@ -1,0 +1,22 @@
+import { type Vector2 } from "@babylonjs/core/Maths/math.vector.pure.js";
+import { Button } from "./button.pure.js";
+import { type Control } from "./control.pure.js";
+import { type PointerInfoBase } from "@babylonjs/core/Events/pointerEvents.js";
+import { type IFocusableControl } from "./focusableControl.js";
+/**
+ * Class used to create a focusable button that can easily handle keyboard events
+ * @since 5.0.0
+ */
+export declare class FocusableButton extends Button implements IFocusableControl {
+    name?: string | undefined;
+    constructor(name?: string | undefined);
+    /**
+     * @internal
+     */
+    _onPointerDown(target: Control, coordinates: Vector2, pointerId: number, buttonIndex: number, pi: PointerInfoBase): boolean;
+}
+/**
+ * Registers the FocusableButton class with the type store for serialization support.
+ * Safe to call multiple times; only the first call has an effect.
+ */
+export declare function RegisterFocusableButton(): void;

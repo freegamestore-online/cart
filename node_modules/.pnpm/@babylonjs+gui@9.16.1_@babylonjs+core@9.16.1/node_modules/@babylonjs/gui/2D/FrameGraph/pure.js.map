@@ -1,0 +1,1 @@
+{"version":3,"file":"pure.js","sourceRoot":"","sources":["../../../../../dev/gui/src/2D/FrameGraph/pure.ts"],"names":[],"mappings":"AAAA,6DAA6D;AAC7D,cAAc,4BAA4B,CAAC","sourcesContent":["/** Pure barrel — re-exports only side-effect-free modules */\nexport * from \"./renderGraphGUIBlock.pure\";\n"]}

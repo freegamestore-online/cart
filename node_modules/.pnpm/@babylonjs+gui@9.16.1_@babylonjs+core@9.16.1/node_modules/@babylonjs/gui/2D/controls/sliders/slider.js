@@ -1,0 +1,8 @@
+/**
+ * Re-exports the pure implementation and applies the runtime registration side effect.
+ * Import "./slider.pure" for tree-shakeable, side-effect-free usage.
+ */
+export * from "./slider.pure.js";
+import { RegisterSlider } from "./slider.pure.js";
+RegisterSlider();
+//# sourceMappingURL=slider.js.map

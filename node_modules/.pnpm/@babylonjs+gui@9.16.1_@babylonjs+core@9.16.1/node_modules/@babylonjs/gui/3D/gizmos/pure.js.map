@@ -1,0 +1,1 @@
+{"version":3,"file":"pure.js","sourceRoot":"","sources":["../../../../../dev/gui/src/3D/gizmos/pure.ts"],"names":[],"mappings":"AAAA,6DAA6D;AAC7D,cAAc,cAAc,CAAC;AAC7B,cAAc,eAAe,CAAC","sourcesContent":["/** Pure barrel — re-exports only side-effect-free modules */\nexport * from \"./slateGizmo\";\nexport * from \"./gizmoHandle\";\n"]}
