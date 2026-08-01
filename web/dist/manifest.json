@@ -1,6 +1,6 @@
 {
-  "name": "APPNAME",
-  "short_name": "APPNAME",
+  "name": "Cart",
+  "short_name": "Cart",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
