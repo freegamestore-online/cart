@@ -11,6 +11,7 @@
     "@babylonjs/core": "^9.33.1",
     "@babylonjs/gui": "^9.33.1",
     "@babylonjs/loaders": "^9.33.1",
+    "@freegamestore/games": "^0.20.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
@@ -22,6 +23,7 @@
     "@vitejs/plugin-react": "^6.1.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5"
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0"
   }
 }

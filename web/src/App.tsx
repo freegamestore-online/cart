@@ -1,17 +1,16 @@
+import { ArcRotateCamera } from "@babylonjs/core/Cameras/arcRotateCamera";
+import { Color3 } from "@babylonjs/core/Maths/math.color";
+import { Color4 } from "@babylonjs/core/Maths/math.color";
+import { DirectionalLight } from "@babylonjs/core/Lights/directionalLight";
+import { Engine } from "@babylonjs/core/Engines/engine";
+import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+import { Mesh } from "@babylonjs/core/Meshes/mesh";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import { Scene } from "@babylonjs/core/scene";
+import { StandardMaterial } from "@babylonjs/core/Materials/standardMaterial";
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { GameShell } from "@freegamestore/games";
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import {
-  Color3,
-  Color4,
-  Engine,
-  Scene,
-  ArcRotateCamera,
-  HemisphericLight,
-  DirectionalLight,
-  MeshBuilder,
-  StandardMaterial,
-  Vector3,
-  Mesh,
-} from "@babylonjs/core";
 import { useHighScore } from "./hooks/useHighScore";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -419,6 +418,7 @@ export default function App() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
+    <GameShell>
     <div className="relative w-full h-full" style={{ background: "#87cefd" }}>
       {/* HUD */}
       <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 pt-3 pb-2 pointer-events-none">
@@ -506,5 +506,6 @@ export default function App() {
         </div>
       )}
     </div>
+    </GameShell>
   );
 }
